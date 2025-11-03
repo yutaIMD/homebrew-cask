@@ -6,6 +6,10 @@ on:
       - Add-Fetch-google-font-meta # ユーザー様が指定したブランチ
     paths:
       - 'Casks/font/**/**.rb' # ユーザー様が指定したパス
+  # --- ▼ ここから追加 ▼ ---
+  # これにより「Actions」タブから手動実行が可能になります
+  workflow_dispatch:
+  # --- ▲ ここまで追加 ▲ ---
 
 jobs:
   add-metadata:
@@ -21,61 +25,86 @@ jobs:
           # 変更をpushできるように、ブランチの最新状態を取得します
           fetch-depth: 0 
 
-      - name: 2. 変更されたCaskファイルを取得
+      - name: 2. [Push時] 変更されたCaskファイルを取得
+        # 手動実行時は 'push' イベントではないため、このステップはスキップされます
+        if: github.event_name == 'push'
         id: changed-files
         uses: tj-actions/changed-files@v44
         with:
           files: Casks/font/**/**.rb
 
       - name: 3. Python環境をセットアップ
-        if: steps.changed-files.outputs.any_changed == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
       - name: 4. Pythonのhttpクライアントをインストール
-        if: steps.changed-files.outputs.any_changed == 'true'
-        run: pip install httpx # requestsより新しく高速なライブラリ
+        run: pip install httpx
 
-      # --- ここからが変更点です ---
-      - name: 5. メタデータを取得し、ファイルごとにコミット
-        if: steps.changed-files.outputs.any_changed == 'true'
+      # --- ▼ ここからがロジックの分岐です ▼ ---
+
+      - name: 5a. [Push時] メタデータを取得し、ファイルごとにコミット
+        if: github.event_name == 'push' && steps.changed-files.outputs.any_changed == 'true'
         run: |
-          # Gitの設定 (一度だけ実行)
+          echo "Running in 'push' mode (incremental update)..."
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          
-          # 1つでも変更があった場合に 'true' になるフラグ
           changes_made=false
 
-          # 変更されたファイルごとにループ
+          # 変更されたファイルだけをループ
           for cask_file in ${{ steps.changed-files.outputs.all_changed_files }}; do
             echo "--- Processing $cask_file ---"
-            
-            # 1. スクリプトを実行してファイル内容を（必要なら）変更
             python .github/scripts/fetch_google_font_meta.py "$cask_file"
             
-            # 2. スクリプトによって *このファイルが* 変更されたか確認
-            # 'git diff --quiet' は変更 *なし* で 0 (true) を返します
             if ! git diff --quiet -- "$cask_file"; then
               echo "Changes detected for $cask_file. Committing..."
-              changes_made=true # 変更フラグを立てる
-              
-              # 3. Cask名からフォント名を取得 (例: .../font-noto-sans-jp.rb -> font-noto-sans-jp)
+              changes_made=true
               font_name=$(basename "$cask_file" .rb)
-              
-              # 4. このファイルだけを 'add' してコミット
               git add "$cask_file"
               git commit -m "feat($font_name): Add metadata by Google Fonts sync"
             else
-              echo "No changes needed for $cask_file (metadata already exists or not a Google Font)."
+              echo "No changes needed for $cask_file."
             fi
           done
           
-          # 6. ループ全体で変更が1つでもあれば、最後にまとめてプッシュ
           if [ "$changes_made" = true ]; then
             echo "--- Pushing all new commits ---"
             git push
           else
             echo "--- No changes to push ---"
           fi
+
+      - name: 5b. [手動実行時] メタデータを取得し、ファイルごとにコミット
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "Running in 'workflow_dispatch' mode (full scan)..."
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          changes_made=false
+
+          # 'Casks/font/' 以下の *すべて* の .rb ファイルを対象にループ
+          # (ファイル名にスペースがない前提のシンプルなfind)
+          for cask_file in $(find Casks/font/ -name "*.rb"); do
+            echo "--- Processing $cask_file ---"
+            # スクリプトは「既にメタデータがあればスキップする」ロジックを持っているので、
+            # 全ファイルに実行しても安全です
+            python .github/scripts/fetch_google_font_meta.py "$cask_file"
+            
+            if ! git diff --quiet -- "$cask_file"; then
+              echo "Changes detected for $cask_file. Committing..."
+              changes_made=true
+              font_name=$(basename "$cask_file" .rb)
+              git add "$cask_file"
+              git commit -m "feat($font_name): Add metadata by Google Fonts sync"
+            else
+              echo "No changes needed for $cask_file."
+            fi
+          done
+          
+          if [ "$changes_made" = true ]; then
+            echo "--- Pushing all new commits ---"
+            git push
+          else
+            echo "--- No changes to push ---"
+          fi
+
