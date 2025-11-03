@@ -88,6 +88,7 @@ jobs:
             echo "--- Processing $cask_file ---"
             # スクリプトは「既にメタデータがあればスキップする」ロジックを持っているので、
             # 全ファイルに実行しても安全です
+            ls .github/scripts/
             python .github/scripts/fetch_google_font_meta.py "$cask_file"
             
             if ! git diff --quiet -- "$cask_file"; then
